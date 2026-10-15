@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>スコアボード</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;700;900&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="app-header">
+  <input id="contestTitle" class="title-input" value="コンテスト" aria-label="大会名">
+  <div class="header-actions">
+    <button id="exportBtn" class="btn ghost" title="データをJSONで保存">保存</button>
+    <label class="btn ghost" title="JSONを読み込み">読込<input id="importInput" type="file" accept="application/json" hidden></label>
+    <button id="resetBtn" class="btn ghost danger">全消去</button>
+  </div>
+</header>
+
+<main class="container">
+  <section class="panel">
+    <h2>競技者</h2>
+    <form id="addParticipantForm" class="add-form">
+      <input id="participantName" placeholder="競技者名を入力" maxlength="40" required>
+      <button class="btn primary" type="submit">追加</button>
+    </form>
+  </section>
+
+  <section class="panel">
+    <h2>評価項目</h2>
+    <form id="addCriterionForm" class="add-form">
+      <input id="criterionName" placeholder="項目名(例: プレゼン力)" maxlength="30" required>
+      <label class="max-label">満点 <input id="criterionMax" type="number" min="1" value="10" required></label>
+      <button class="btn primary" type="submit">追加</button>
+    </form>
+  </section>
+
+  <section class="panel">
+    <h2>得点表</h2>
+    <div class="table-wrap">
+      <table id="scoreTable"></table>
+    </div>
+    <p id="emptyHint" class="hint"></p>
+  </section>
+
+  <div class="announce-wrap">
+    <button id="announceBtn" class="btn announce">🏆 結果発表</button>
+  </div>
+</main>
+
+<!-- 結果発表オーバーレイ -->
+<div id="overlay" class="overlay" hidden>
+  <canvas id="confetti"></canvas>
+  <button id="closeOverlay" class="close-btn" aria-label="閉じる">✕</button>
+  <div id="stage" class="stage"></div>
+  <div class="overlay-footer">
+    <button id="nextBtn" class="btn next">次へ ▶</button>
+    <label class="sound-toggle"><input id="soundToggle" type="checkbox" checked> 効果音</label>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
