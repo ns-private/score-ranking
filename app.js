@@ -50,6 +50,8 @@
   function render() {
     $('#contestTitle').value = state.title;
     document.title = `${state.title} | スコアボード`;
+    $('#lockSummary').textContent =
+      `競技者 ${state.participants.length} 名 ／ 評価項目 ${state.criteria.length} 件`;
     table.innerHTML = '';
 
     const hint = $('#emptyHint');
@@ -247,6 +249,21 @@
     save();
     render();
   });
+
+  // ============================================================
+  // 非表示モード (画面共有中に得点が見えないようにする)
+  // 表示状態は保存せず、読み込み時は常に非表示から始める
+  // ============================================================
+  function setEditorVisible(visible) {
+    $('#editor').hidden = !visible;
+    $('#lockPanel').hidden = visible;
+  }
+
+  $('#showEditorBtn').addEventListener('click', () => {
+    if (!confirm('競技者・評価項目・得点を表示します。\n画面共有中の場合は共有画面に映らないか確認してください。')) return;
+    setEditorVisible(true);
+  });
+  $('#hideEditorBtn').addEventListener('click', () => setEditorVisible(false));
 
   // 保存・読込(JSON)
   $('#exportBtn').addEventListener('click', () => {
@@ -616,6 +633,7 @@
   function openOverlay() {
     if (!state.participants.length) return;
     ctx(); // ユーザー操作中に AudioContext を有効化
+    setEditorVisible(false); // 発表後に得点表が見えたままにならないよう隠す
     steps = buildSteps();
     stepIndex = 0;
     overlay.hidden = false;
@@ -648,4 +666,5 @@
   });
 
   render();
+  setEditorVisible(false);
 })();

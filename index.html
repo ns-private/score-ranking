@@ -20,6 +20,19 @@
 </header>
 
 <main class="container">
+  <!-- 非表示中に表示するカード -->
+  <section id="lockPanel" class="panel lock-panel">
+    <div class="lock-icon">🔒</div>
+    <p class="lock-title">競技者・評価項目・得点は非表示中です</p>
+    <p id="lockSummary" class="lock-sub"></p>
+    <button id="showEditorBtn" class="btn primary">得点表を表示</button>
+  </section>
+
+  <div id="editor" class="editor" hidden>
+  <div class="editor-bar">
+    <button id="hideEditorBtn" class="btn hide-btn">🔒 得点表を隠す</button>
+  </div>
+
   <section class="panel">
     <h2>競技者</h2>
     <form id="addParticipantForm" class="add-form">
@@ -44,6 +57,7 @@
     </div>
     <p id="emptyHint" class="hint"></p>
   </section>
+  </div>
 
   <div class="announce-wrap">
     <button id="announceBtn" class="btn announce">🏆 結果発表</button>
