@@ -486,7 +486,7 @@
   // 同点は同順位 (1, 1, 3 ...)
   function computeRanking() {
     const list = state.participants
-      .map((p) => ({ p, name: p.name || '(名前なし)', total: totalOf(p) }))
+      .map((p) => ({ p, name: p.name.trim() ? `${p.name.trim()}さん` : '(名前なし)', total: totalOf(p) }))
       .sort((a, b) => b.total - a.total);
     list.forEach((e, i) => {
       e.rank = i > 0 && e.total === list[i - 1].total ? list[i - 1].rank : i + 1;
