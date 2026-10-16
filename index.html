@@ -11,58 +11,148 @@
 </head>
 <body>
 <header class="app-header">
-  <input id="contestTitle" class="title-input" value="コンテスト" aria-label="大会名">
-  <div class="header-actions">
-    <button id="exportBtn" class="btn ghost" title="データをJSONで保存">保存</button>
-    <label class="btn ghost" title="JSONを読み込み">読込<input id="importInput" type="file" accept="application/json" hidden></label>
-    <button id="resetBtn" class="btn ghost danger">全消去</button>
-  </div>
+  <h1 id="appTitle" class="app-title">スコアボード</h1>
+  <span id="modeBadge" class="mode-badge"></span>
 </header>
 
 <main class="container">
-  <!-- 非表示中に表示するカード -->
-  <section id="lockPanel" class="panel lock-panel">
-    <div class="lock-icon">🔒</div>
-    <p class="lock-title">競技者・評価項目・得点は非表示中です</p>
-    <p id="lockSummary" class="lock-sub"></p>
-    <button id="showEditorBtn" class="btn primary">得点表を表示</button>
+  <!-- 読み込み中 -->
+  <section id="viewLoading" class="panel center">
+    <div class="spinner"></div>
+    <p class="muted">読み込み中…</p>
   </section>
 
-  <div id="editor" class="editor" hidden>
-  <div class="editor-bar">
-    <button id="hideEditorBtn" class="btn hide-btn">🔒 得点表を隠す</button>
-  </div>
+  <!-- 接続エラー / 未設定 -->
+  <section id="viewError" class="panel narrow center" hidden>
+    <h2>接続できません</h2>
+    <p id="errorMessage" class="muted"></p>
+    <button id="retryBtn" class="btn primary">再読み込み</button>
+  </section>
 
-  <section class="panel">
-    <h2>競技者</h2>
-    <form id="addParticipantForm" class="add-form">
-      <input id="participantName" placeholder="競技者名を入力" maxlength="40" required>
-      <button class="btn primary" type="submit">追加</button>
+  <!-- 審査員ログイン -->
+  <section id="viewJudgeLogin" class="panel narrow" hidden>
+    <h2>審査員ログイン</h2>
+    <form id="judgeLoginForm" class="stack">
+      <label class="field">審査員
+        <select id="judgeSelect" required></select>
+      </label>
+      <label class="field">PIN (4 桁)
+        <input id="judgePin" inputmode="numeric" pattern="\d{4}" maxlength="4" autocomplete="off" required>
+      </label>
+      <button class="btn primary block" type="submit">ログイン</button>
     </form>
+    <p class="muted small">PIN は管理者から受け取ってください。</p>
   </section>
 
-  <section class="panel">
-    <h2>評価項目</h2>
-    <form id="addCriterionForm" class="add-form">
-      <input id="criterionName" placeholder="項目名(例: プレゼン力)" maxlength="30" required>
-      <label class="max-label">満点 <input id="criterionMax" type="number" min="1" value="10" required></label>
-      <button class="btn primary" type="submit">追加</button>
-    </form>
-  </section>
-
-  <section class="panel">
-    <h2>得点表</h2>
-    <div class="table-wrap">
-      <table id="scoreTable"></table>
+  <!-- 審査員: 参加者一覧 -->
+  <section id="viewJudgeList" class="stack-lg" hidden>
+    <div class="toolbar">
+      <div><span class="muted small">審査員</span><br><strong id="judgeName" class="judge-name"></strong></div>
+      <div class="toolbar-actions">
+        <button id="judgeRefreshBtn" class="btn subtle">↻ 更新</button>
+        <button id="judgeLogoutBtn" class="btn subtle">ログアウト</button>
+      </div>
     </div>
-    <p id="emptyHint" class="hint"></p>
+    <p id="judgeProgress" class="muted"></p>
+    <div id="participantGrid" class="card-grid"></div>
   </section>
-  </div>
 
-  <div class="announce-wrap">
-    <button id="announceBtn" class="btn announce">🏆 結果発表</button>
-  </div>
+  <!-- 審査員: 得点入力 -->
+  <section id="viewJudgeScore" class="stack-lg" hidden>
+    <div class="toolbar">
+      <button id="scoreBackBtn" class="btn subtle">← 参加者一覧</button>
+    </div>
+    <div class="panel">
+      <p class="muted small">採点中の参加者</p>
+      <h2 id="scoreTarget" class="score-target"></h2>
+      <form id="scoreForm" class="stack-lg">
+        <div id="scoreFields" class="score-fields"></div>
+        <div class="score-total">合計 <strong id="scoreTotal">0</strong> <span class="muted">/ <span id="scoreMax">0</span></span></div>
+        <button id="scoreSaveBtn" class="btn primary block big" type="submit">保存する</button>
+      </form>
+    </div>
+  </section>
+
+  <!-- 管理者ログイン -->
+  <section id="viewAdminLogin" class="panel narrow" hidden>
+    <h2>管理者ログイン</h2>
+    <form id="adminLoginForm" class="stack">
+      <label class="field">パスワード
+        <input id="adminPassword" type="password" autocomplete="current-password" required>
+      </label>
+      <button class="btn primary block" type="submit">ログイン</button>
+    </form>
+  </section>
+
+  <!-- 管理者画面 -->
+  <section id="viewAdmin" class="stack-lg" hidden>
+    <div class="toolbar sticky">
+      <div id="dirtyNote" class="dirty-note" hidden>● 未保存の変更があります</div>
+      <div class="toolbar-actions">
+        <button id="adminSaveBtn" class="btn primary">保存して全員に反映</button>
+        <button id="adminLogoutBtn" class="btn subtle">ログアウト</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>大会名</h2>
+      <input id="adminTitle" class="wide" maxlength="60">
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <h2>審査員</h2>
+        <label class="small muted check"><input id="showPins" type="checkbox" autocomplete="off"> PIN を表示</label>
+      </div>
+      <div id="judgeList" class="item-list"></div>
+      <form id="addJudgeForm" class="add-form">
+        <input id="newJudgeName" placeholder="審査員名" maxlength="40" required>
+        <button class="btn primary" type="submit">追加</button>
+      </form>
+      <p class="muted small">PIN を空欄で保存すると自動で発行されます。</p>
+    </div>
+
+    <div class="panel">
+      <h2>参加者</h2>
+      <div id="participantList" class="item-list"></div>
+      <form id="addParticipantForm" class="add-form">
+        <input id="newParticipantName" placeholder="参加者名" maxlength="40" required>
+        <button class="btn primary" type="submit">追加</button>
+      </form>
+    </div>
+
+    <div class="panel">
+      <h2>評価項目</h2>
+      <div id="criterionList" class="item-list"></div>
+      <form id="addCriterionForm" class="add-form">
+        <input id="newCriterionName" placeholder="項目名 (例: プレゼン力)" maxlength="40" required>
+        <label class="max-label">満点 <input id="newCriterionMax" type="number" min="1" value="10" required></label>
+        <button class="btn primary" type="submit">追加</button>
+      </form>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <h2>採点状況</h2>
+        <button id="progressRefreshBtn" class="btn subtle small-btn">↻ 更新</button>
+      </div>
+      <p class="muted small">得点そのものは表示されません。✓ = 全項目入力済み</p>
+      <div class="table-wrap"><table id="progressTable" class="progress-table"></table></div>
+    </div>
+
+    <div class="announce-wrap">
+      <button id="announceBtn" class="btn announce">🏆 結果発表</button>
+    </div>
+  </section>
+
+  <footer class="footer">
+    <a href="#" id="judgeLink">審査員</a>
+    <span class="muted">|</span>
+    <a href="#admin" id="adminLink">管理者</a>
+  </footer>
 </main>
+
+<div id="toast" class="toast" hidden></div>
 
 <!-- 結果発表オーバーレイ -->
 <div id="overlay" class="overlay" hidden>
@@ -75,6 +165,7 @@
   </div>
 </div>
 
+<script src="config.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

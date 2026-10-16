@@ -1,294 +1,691 @@
 (() => {
   'use strict';
 
-  const STORAGE_KEY = 'score-ranking-v1';
   const $ = (sel) => document.querySelector(sel);
-  const uid = () => Math.random().toString(36).slice(2, 10);
+  const API_URL = String(window.SCOREBOARD_API_URL || '').trim();
+  const MOCK = new URLSearchParams(location.search).has('mock');
+  const JUDGE_KEY = 'scoreboard-judge';
 
   // ============================================================
-  // 状態管理
+  // 共通
   // ============================================================
-  const defaultState = () => ({
-    title: 'コンテスト',
-    criteria: [
-      { id: uid(), name: 'プレゼン力', max: 10 },
-      { id: uid(), name: 'コミュニケーション力', max: 10 },
-    ],
-    participants: [],
+  const VIEWS = ['viewLoading', 'viewError', 'viewJudgeLogin', 'viewJudgeList', 'viewJudgeScore', 'viewAdminLogin', 'viewAdmin'];
+  function show(id) {
+    VIEWS.forEach((v) => { $('#' + v).hidden = v !== id; });
+    window.scrollTo(0, 0);
+  }
+
+  function setMode(label) {
+    $('#modeBadge').textContent = label + (MOCK ? '・デモ' : '');
+  }
+
+  function setTitle(title) {
+    $('#appTitle').textContent = title || 'スコアボード';
+    document.title = (title ? title + ' | ' : '') + 'スコアボード';
+  }
+
+  function showError(message) {
+    $('#errorMessage').textContent = message;
+    show('viewError');
+  }
+
+  let toastTimer = null;
+  function toast(message, isError) {
+    const t = $('#toast');
+    t.textContent = message;
+    t.classList.toggle('error', !!isError);
+    t.hidden = false;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { t.hidden = true; }, isError ? 5000 : 2500);
+  }
+
+  function el(tag, cls, text) {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text != null) e.textContent = text;
+    return e;
+  }
+
+  const fmt = (n) => (Math.round(n * 100) / 100).toString();
+  const hasValue = (v) => v !== undefined && v !== null && v !== '';
+
+  function storageGet(key) {
+    try { return JSON.parse(localStorage.getItem(key)); } catch (_) { return null; }
+  }
+  function storageSet(key, value) {
+    try {
+      if (value == null) localStorage.removeItem(key);
+      else localStorage.setItem(key, JSON.stringify(value));
+    } catch (_) { /* 保存できなくても動作は続ける */ }
+  }
+
+  // ボタンを処理中表示にして二重送信を防ぐ
+  async function withBusy(btn, label, fn) {
+    const original = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = label;
+    try {
+      return await fn();
+    } finally {
+      btn.disabled = false;
+      btn.textContent = original;
+    }
+  }
+
+  // ============================================================
+  // API (Google Apps Script)
+  // ============================================================
+  function loadScript(src) {
+    return new Promise((resolve, reject) => {
+      const s = document.createElement('script');
+      s.src = src;
+      s.onload = resolve;
+      s.onerror = () => reject(new Error(src + ' を読み込めません'));
+      document.head.appendChild(s);
+    });
+  }
+
+  async function api(action, payload) {
+    const body = Object.assign({ action }, payload || {});
+    let res;
+    if (MOCK) {
+      res = await window.mockApi(body);
+    } else {
+      let r;
+      try {
+        // Content-Type を付けない (text/plain) ことで CORS のプリフライトを避ける
+        r = await fetch(API_URL, { method: 'POST', body: JSON.stringify(body) });
+      } catch (_) {
+        throw new Error('サーバーに接続できません。通信状況を確認してください。');
+      }
+      if (!r.ok) throw new Error('サーバーエラーが発生しました (' + r.status + ')');
+      try {
+        res = await r.json();
+      } catch (_) {
+        throw new Error('サーバーの応答を読み取れません。API の URL と公開設定を確認してください。');
+      }
+    }
+    if (!res.ok) throw new Error(res.error || 'エラーが発生しました');
+    return res.data;
+  }
+
+  // ============================================================
+  // 画面の切り替え (#admin で管理者画面)
+  // ============================================================
+  function route() {
+    if (location.hash === '#admin') startAdmin();
+    else startJudge();
+  }
+
+  window.addEventListener('hashchange', () => {
+    if (location.hash !== '#admin' && adminDirty) {
+      if (!confirm('管理者画面の未保存の変更は破棄されます。移動しますか？')) {
+        location.hash = '#admin';
+        return;
+      }
+      adminState = null;
+      setDirty(false);
+    }
+    route();
   });
 
-  let state = load();
+  window.addEventListener('beforeunload', (e) => {
+    if (adminDirty) {
+      e.preventDefault();
+      e.returnValue = '';
+    }
+  });
 
-  function load() {
+  $('#retryBtn').addEventListener('click', () => location.reload());
+
+  // ============================================================
+  // 審査員
+  // ============================================================
+  let config = null; // { title, judges[{id,name}], participants[], criteria[] }
+  let judge = null; // { id, name, pin }
+  let myScores = {}; // { participantId: { criterionId: 値 } }
+  let currentPid = null;
+  let draft = {};
+
+  async function startJudge() {
+    setMode('審査員');
+    if (judge) {
+      renderJudgeList();
+      show('viewJudgeList');
+      return;
+    }
+    show('viewLoading');
+    const saved = storageGet(JUDGE_KEY);
     try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (raw) {
-        const s = JSON.parse(raw);
-        if (Array.isArray(s.criteria) && Array.isArray(s.participants)) return s;
+      if (saved && saved.judgeId && saved.pin) {
+        try {
+          await judgeLogin(saved.judgeId, saved.pin);
+          return;
+        } catch (e) {
+          storageSet(JUDGE_KEY, null);
+          toast(e.message, true);
+        }
       }
-    } catch (_) { /* ストレージ不可でも動作させる */ }
-    return defaultState();
+      config = await api('config');
+      setTitle(config.title);
+      showJudgeLogin();
+    } catch (e) {
+      showError(e.message);
+    }
   }
 
-  function save() {
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (_) {}
-  }
-
-  const toNum = (v) => {
-    const n = parseFloat(v);
-    return Number.isFinite(n) ? n : 0;
-  };
-  const totalOf = (p) => state.criteria.reduce((sum, c) => sum + toNum(p.scores[c.id]), 0);
-  const maxTotal = () => state.criteria.reduce((sum, c) => sum + toNum(c.max), 0);
-  const fmt = (n) => (Math.round(n * 100) / 100).toString();
-
-  // ============================================================
-  // 画面描画
-  // ============================================================
-  const table = $('#scoreTable');
-
-  function render() {
-    $('#contestTitle').value = state.title;
-    document.title = `${state.title} | スコアボード`;
-    $('#lockSummary').textContent =
-      `競技者 ${state.participants.length} 名 ／ 評価項目 ${state.criteria.length} 件`;
-    table.innerHTML = '';
-
-    const hint = $('#emptyHint');
-    if (state.participants.length === 0 && state.criteria.length === 0) {
-      hint.textContent = '競技者と評価項目を追加してください。';
-    } else if (state.participants.length === 0) {
-      hint.textContent = '競技者を追加すると得点を入力できます。';
-    } else if (state.criteria.length === 0) {
-      hint.textContent = '評価項目を追加すると得点を入力できます。';
+  function showJudgeLogin() {
+    const sel = $('#judgeSelect');
+    sel.innerHTML = '';
+    if (!config.judges.length) {
+      const o = el('option', null, '審査員が登録されていません');
+      o.value = '';
+      sel.appendChild(o);
     } else {
-      hint.textContent = '';
+      const o = el('option', null, '選択してください');
+      o.value = '';
+      sel.appendChild(o);
+      config.judges.forEach((j) => {
+        const opt = el('option', null, j.name);
+        opt.value = j.id;
+        sel.appendChild(opt);
+      });
+    }
+    $('#judgePin').value = '';
+    show('viewJudgeLogin');
+  }
+
+  async function judgeLogin(judgeId, pin) {
+    const data = await api('judgeLogin', { judgeId, pin });
+    judge = { id: data.judge.id, name: data.judge.name, pin };
+    myScores = data.scores || {};
+    config = data.config;
+    setTitle(config.title);
+    storageSet(JUDGE_KEY, { judgeId, pin });
+    renderJudgeList();
+    show('viewJudgeList');
+  }
+
+  $('#judgeLoginForm').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const judgeId = $('#judgeSelect').value;
+    const pin = $('#judgePin').value.trim();
+    if (!judgeId) {
+      toast('審査員を選択してください。', true);
+      return;
+    }
+    withBusy(e.submitter || $('#judgeLoginForm button'), 'ログイン中…', async () => {
+      try {
+        await judgeLogin(judgeId, pin);
+      } catch (err) {
+        toast(err.message, true);
+      }
+    });
+  });
+
+  function scoredCount(pid) {
+    const s = myScores[pid] || {};
+    return config.criteria.filter((c) => hasValue(s[c.id])).length;
+  }
+
+  function renderJudgeList() {
+    $('#judgeName').textContent = judge.name;
+    const grid = $('#participantGrid');
+    grid.innerHTML = '';
+    const total = config.criteria.length;
+
+    if (!config.participants.length || !total) {
+      $('#judgeProgress').textContent = !config.participants.length
+        ? '参加者がまだ登録されていません。'
+        : '評価項目がまだ登録されていません。';
+      return;
     }
 
-    // ヘッダー
-    const thead = document.createElement('thead');
-    const hr = document.createElement('tr');
-    const thName = document.createElement('th');
-    thName.className = 'name-col';
-    thName.textContent = '競技者';
-    hr.appendChild(thName);
-
-    state.criteria.forEach((c) => {
-      const th = document.createElement('th');
-      const box = document.createElement('div');
-      box.className = 'crit-head';
-
-      const top = document.createElement('div');
-      top.className = 'crit-top';
-      const nameInput = document.createElement('input');
-      nameInput.className = 'crit-name';
-      nameInput.value = c.name;
-      nameInput.setAttribute('aria-label', '項目名');
-      nameInput.addEventListener('input', () => { c.name = nameInput.value; save(); });
-      const del = document.createElement('button');
-      del.className = 'icon-btn';
-      del.title = `「${c.name}」を削除`;
-      del.textContent = '✕';
-      del.addEventListener('click', () => removeCriterion(c.id));
-      top.append(nameInput, del);
-
-      const maxBox = document.createElement('label');
-      maxBox.className = 'crit-max';
-      maxBox.append('満点');
-      const maxInput = document.createElement('input');
-      maxInput.type = 'number';
-      maxInput.min = '1';
-      maxInput.value = c.max;
-      maxInput.addEventListener('input', () => {
-        c.max = toNum(maxInput.value);
-        save();
-        refreshScoreValidation();
-        refreshTotals();
-      });
-      maxBox.appendChild(maxInput);
-
-      box.append(top, maxBox);
-      th.appendChild(box);
-      hr.appendChild(th);
+    let done = 0;
+    config.participants.forEach((p) => {
+      const n = scoredCount(p.id);
+      if (n === total) done++;
+      const card = el('button', 'p-card' + (n === total ? ' done' : ''));
+      card.type = 'button';
+      card.append(el('span', 'p-card-name', p.name));
+      if (n === total) card.append(el('span', 'status done', '✓ 入力済み'));
+      else if (n > 0) card.append(el('span', 'status partial', `一部入力 (${n}/${total})`));
+      else card.append(el('span', 'status', '未入力'));
+      card.addEventListener('click', () => openScore(p.id));
+      grid.appendChild(card);
     });
+    $('#judgeProgress').textContent = `参加者をタップして採点してください。(${config.participants.length} 名中 ${done} 名 入力済み)`;
+  }
 
-    const thTotal = document.createElement('th');
-    thTotal.innerHTML = `合計<br><span style="font-weight:400">/ <span id="maxTotal">${fmt(maxTotal())}</span></span>`;
-    hr.appendChild(thTotal);
-    thead.appendChild(hr);
-    table.appendChild(thead);
+  function openScore(pid) {
+    const p = config.participants.find((x) => x.id === pid);
+    if (!p) return;
+    currentPid = pid;
+    draft = {};
+    const saved = myScores[pid] || {};
+    config.criteria.forEach((c) => { if (hasValue(saved[c.id])) draft[c.id] = saved[c.id]; });
+    $('#scoreTarget').textContent = p.name;
+    renderScoreFields();
+    show('viewJudgeScore');
+  }
 
-    // 本体
-    const tbody = document.createElement('tbody');
-    state.participants.forEach((p) => {
-      const tr = document.createElement('tr');
+  function renderScoreFields() {
+    const box = $('#scoreFields');
+    box.innerHTML = '';
+    config.criteria.forEach((c) => {
+      const field = el('div', 'crit-field');
+      const head = el('div', 'crit-field-head');
+      const name = el('span', 'crit-field-name', c.name);
+      name.append(el('span', 'muted small', ` (満点 ${c.max})`));
+      const value = el('span', 'crit-field-value', hasValue(draft[c.id]) ? `${draft[c.id]} 点` : '—');
+      head.append(name, value);
+      field.appendChild(head);
 
-      const tdName = document.createElement('td');
-      tdName.className = 'name-col';
-      const nameInput = document.createElement('input');
-      nameInput.value = p.name;
-      nameInput.setAttribute('aria-label', '競技者名');
-      nameInput.addEventListener('input', () => { p.name = nameInput.value; save(); });
-      const del = document.createElement('button');
-      del.className = 'icon-btn';
-      del.title = `「${p.name}」を削除`;
-      del.textContent = '✕';
-      del.addEventListener('click', () => removeParticipant(p.id));
-      const nameCell = document.createElement('div');
-      nameCell.className = 'name-cell';
-      nameCell.append(nameInput, del);
-      tdName.appendChild(nameCell);
-      tr.appendChild(tdName);
+      const update = () => {
+        value.textContent = hasValue(draft[c.id]) ? `${draft[c.id]} 点` : '—';
+        updateScoreTotal();
+      };
 
-      state.criteria.forEach((c) => {
-        const td = document.createElement('td');
+      if (Number.isInteger(c.max) && c.max <= 10) {
+        // 満点が 10 以下ならボタンで選ぶ (もう一度押すと取り消し)
+        const row = el('div', 'pick-row');
+        for (let v = 0; v <= c.max; v++) {
+          const b = el('button', 'pick' + (Number(draft[c.id]) === v && hasValue(draft[c.id]) ? ' on' : ''), String(v));
+          b.type = 'button';
+          b.addEventListener('click', () => {
+            if (hasValue(draft[c.id]) && Number(draft[c.id]) === v) delete draft[c.id];
+            else draft[c.id] = v;
+            row.querySelectorAll('.pick').forEach((x, i) => x.classList.toggle('on', hasValue(draft[c.id]) && Number(draft[c.id]) === i));
+            update();
+          });
+          row.appendChild(b);
+        }
+        field.appendChild(row);
+      } else {
         const inp = document.createElement('input');
         inp.type = 'number';
-        inp.className = 'score';
         inp.min = '0';
+        inp.max = String(c.max);
         inp.step = 'any';
         inp.inputMode = 'decimal';
-        inp.value = p.scores[c.id] ?? '';
-        inp.dataset.pid = p.id;
-        inp.dataset.cid = c.id;
-        inp.setAttribute('aria-label', `${p.name} の ${c.name}`);
+        inp.value = hasValue(draft[c.id]) ? draft[c.id] : '';
+        inp.setAttribute('aria-label', c.name);
         inp.addEventListener('input', () => {
-          p.scores[c.id] = inp.value;
-          save();
-          refreshScoreValidation();
-          refreshTotals();
+          if (inp.value === '') delete draft[c.id];
+          else draft[c.id] = Number(inp.value);
+          update();
         });
-        td.appendChild(inp);
-        tr.appendChild(td);
-      });
+        field.appendChild(inp);
+      }
+      box.appendChild(field);
+    });
+    updateScoreTotal();
+  }
 
-      const tdTotal = document.createElement('td');
-      tdTotal.className = 'total';
-      tdTotal.dataset.pid = p.id;
-      tr.appendChild(tdTotal);
+  function updateScoreTotal() {
+    const total = config.criteria.reduce((sum, c) => sum + (hasValue(draft[c.id]) ? Number(draft[c.id]) : 0), 0);
+    const max = config.criteria.reduce((sum, c) => sum + c.max, 0);
+    $('#scoreTotal').textContent = fmt(total);
+    $('#scoreMax').textContent = fmt(max);
+  }
+
+  function draftChanged() {
+    const saved = myScores[currentPid] || {};
+    return config.criteria.some((c) => String(hasValue(draft[c.id]) ? draft[c.id] : '') !== String(hasValue(saved[c.id]) ? saved[c.id] : ''));
+  }
+
+  $('#scoreForm').addEventListener('submit', (e) => {
+    e.preventDefault();
+    for (const c of config.criteria) {
+      const v = draft[c.id];
+      if (hasValue(v) && (!isFinite(v) || v < 0 || v > c.max)) {
+        toast(`「${c.name}」は 0〜${c.max} の範囲で入力してください。`, true);
+        return;
+      }
+    }
+    const missing = config.criteria.filter((c) => !hasValue(draft[c.id]));
+    if (missing.length && !confirm(`未入力の項目があります (${missing.map((c) => c.name).join('、')})。\nこのまま保存しますか？`)) return;
+
+    const scores = {};
+    config.criteria.forEach((c) => { scores[c.id] = hasValue(draft[c.id]) ? draft[c.id] : ''; });
+
+    withBusy($('#scoreSaveBtn'), '保存中…', async () => {
+      try {
+        const data = await api('saveScores', { judgeId: judge.id, pin: judge.pin, participantId: currentPid, scores });
+        myScores = data.scores || {};
+        config = data.config;
+        setTitle(config.title);
+        toast('保存しました');
+        renderJudgeList();
+        show('viewJudgeList');
+      } catch (err) {
+        toast(err.message, true);
+      }
+    });
+  });
+
+  $('#scoreBackBtn').addEventListener('click', () => {
+    if (draftChanged() && !confirm('保存していない入力は破棄されます。一覧に戻りますか？')) return;
+    renderJudgeList();
+    show('viewJudgeList');
+  });
+
+  $('#judgeRefreshBtn').addEventListener('click', (e) => {
+    withBusy(e.currentTarget, '更新中…', async () => {
+      try {
+        await judgeLogin(judge.id, judge.pin);
+        toast('最新の情報に更新しました');
+      } catch (err) {
+        toast(err.message, true);
+      }
+    });
+  });
+
+  $('#judgeLogoutBtn').addEventListener('click', () => {
+    if (!confirm('ログアウトしますか？')) return;
+    storageSet(JUDGE_KEY, null);
+    judge = null;
+    myScores = {};
+    startJudge();
+  });
+
+  // ============================================================
+  // 管理者
+  // ============================================================
+  let adminPassword = null;
+  let adminState = null; // { title, judges[{id,name,pin}], participants[], criteria[], progress }
+  let adminDirty = false;
+
+  function setDirty(v) {
+    adminDirty = v;
+    $('#dirtyNote').hidden = !v;
+  }
+
+  function startAdmin() {
+    setMode('管理者');
+    if (adminPassword && adminState) {
+      show('viewAdmin');
+      return;
+    }
+    $('#adminPassword').value = '';
+    show('viewAdminLogin');
+    $('#adminPassword').focus();
+  }
+
+  function loadAdminState(data) {
+    adminState = {
+      title: data.title,
+      judges: data.judges.map((j) => ({ id: j.id, name: j.name, pin: j.pin })),
+      participants: data.participants.map((p) => ({ id: p.id, name: p.name })),
+      criteria: data.criteria.map((c) => ({ id: c.id, name: c.name, max: c.max })),
+      progress: data.progress || {},
+    };
+    setTitle(adminState.title);
+    setDirty(false);
+    renderAdmin();
+  }
+
+  $('#adminLoginForm').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const password = $('#adminPassword').value;
+    withBusy($('#adminLoginForm button'), 'ログイン中…', async () => {
+      try {
+        const data = await api('adminLogin', { password });
+        adminPassword = password;
+        loadAdminState(data);
+        show('viewAdmin');
+      } catch (err) {
+        toast(err.message, true);
+      }
+    });
+  });
+
+  function renderAdmin() {
+    $('#adminTitle').value = adminState.title;
+    renderJudgeRows();
+    renderParticipantRows();
+    renderCriterionRows();
+    renderProgress();
+  }
+
+  function deleteButton(label, onDelete) {
+    const b = el('button', 'icon-btn', '✕');
+    b.type = 'button';
+    b.title = `${label}を削除`;
+    b.setAttribute('aria-label', `${label}を削除`);
+    b.addEventListener('click', onDelete);
+    return b;
+  }
+
+  function nameInput(item, label) {
+    const inp = document.createElement('input');
+    inp.className = 'name';
+    inp.maxLength = 40;
+    inp.value = item.name;
+    inp.setAttribute('aria-label', label);
+    inp.addEventListener('input', () => { item.name = inp.value; setDirty(true); });
+    return inp;
+  }
+
+  function renderJudgeRows() {
+    const list = $('#judgeList');
+    list.innerHTML = '';
+    const showPins = $('#showPins').checked;
+    adminState.judges.forEach((j, i) => {
+      const row = el('div', 'item-row');
+      const pin = document.createElement('input');
+      pin.className = 'pin';
+      pin.type = showPins ? 'text' : 'password';
+      pin.inputMode = 'numeric';
+      pin.maxLength = 4;
+      pin.autocomplete = 'off';
+      pin.placeholder = '自動';
+      pin.value = j.pin || '';
+      pin.setAttribute('aria-label', `${j.name} の PIN`);
+      pin.addEventListener('input', () => { j.pin = pin.value.trim(); setDirty(true); });
+      row.append(
+        nameInput(j, '審査員名'),
+        pin,
+        deleteButton(`審査員「${j.name}」`, () => {
+          if (!confirm(`審査員「${j.name}」を削除しますか？\n保存すると、この審査員の得点も削除されます。`)) return;
+          adminState.judges.splice(i, 1);
+          setDirty(true);
+          renderJudgeRows();
+          renderProgress();
+        }),
+      );
+      list.appendChild(row);
+    });
+  }
+
+  function renderParticipantRows() {
+    const list = $('#participantList');
+    list.innerHTML = '';
+    adminState.participants.forEach((p, i) => {
+      const row = el('div', 'item-row');
+      row.append(
+        nameInput(p, '参加者名'),
+        deleteButton(`参加者「${p.name}」`, () => {
+          if (!confirm(`参加者「${p.name}」を削除しますか？\n保存すると、この参加者の得点も削除されます。`)) return;
+          adminState.participants.splice(i, 1);
+          setDirty(true);
+          renderParticipantRows();
+          renderProgress();
+        }),
+      );
+      list.appendChild(row);
+    });
+  }
+
+  function renderCriterionRows() {
+    const list = $('#criterionList');
+    list.innerHTML = '';
+    adminState.criteria.forEach((c, i) => {
+      const row = el('div', 'item-row');
+      const max = document.createElement('input');
+      max.type = 'number';
+      max.className = 'max';
+      max.min = '1';
+      max.value = c.max;
+      max.setAttribute('aria-label', `${c.name} の満点`);
+      max.addEventListener('input', () => { c.max = Number(max.value); setDirty(true); });
+      row.append(
+        nameInput(c, '項目名'),
+        max,
+        el('span', 'unit', '点満点'),
+        deleteButton(`評価項目「${c.name}」`, () => {
+          if (!confirm(`評価項目「${c.name}」を削除しますか？\n保存すると、この項目の得点も削除されます。`)) return;
+          adminState.criteria.splice(i, 1);
+          setDirty(true);
+          renderCriterionRows();
+          renderProgress();
+        }),
+      );
+      list.appendChild(row);
+    });
+  }
+
+  // 保存済みの審査員 × 参加者ごとの入力状況 (得点は表示しない)
+  function countIncomplete() {
+    const total = adminState.criteria.length;
+    let incomplete = 0;
+    adminState.judges.forEach((j) => {
+      adminState.participants.forEach((p) => {
+        const n = (adminState.progress[j.id] || {})[p.id] || 0;
+        if (n < total) incomplete++;
+      });
+    });
+    return incomplete;
+  }
+
+  function renderProgress() {
+    const table = $('#progressTable');
+    table.innerHTML = '';
+    const judges = adminState.judges.filter((j) => j.id);
+    const participants = adminState.participants.filter((p) => p.id);
+    const total = adminState.criteria.filter((c) => c.id).length;
+    if (!judges.length || !participants.length || !total) {
+      const tr = el('tr');
+      tr.append(el('td', 'muted', '審査員・参加者・評価項目を保存すると表示されます。'));
+      table.appendChild(tr);
+      return;
+    }
+    const head = el('tr');
+    head.append(el('th', null, '参加者'));
+    judges.forEach((j) => head.append(el('th', null, j.name)));
+    const thead = el('thead');
+    thead.appendChild(head);
+    table.appendChild(thead);
+
+    const tbody = el('tbody');
+    participants.forEach((p) => {
+      const tr = el('tr');
+      tr.append(el('td', null, p.name));
+      judges.forEach((j) => {
+        const n = (adminState.progress[j.id] || {})[p.id] || 0;
+        if (n >= total) tr.append(el('td', 'ok', '✓'));
+        else if (n > 0) tr.append(el('td', 'part', `${n}/${total}`));
+        else tr.append(el('td', 'none', '–'));
+      });
       tbody.appendChild(tr);
     });
     table.appendChild(tbody);
-
-    refreshScoreValidation();
-    refreshTotals();
   }
 
-  function refreshTotals() {
-    state.participants.forEach((p) => {
-      const td = table.querySelector(`td.total[data-pid="${p.id}"]`);
-      if (td) td.textContent = fmt(totalOf(p));
-    });
-    const mt = $('#maxTotal');
-    if (mt) mt.textContent = fmt(maxTotal());
-    $('#announceBtn').disabled = state.participants.length === 0;
-  }
+  $('#showPins').addEventListener('change', renderJudgeRows);
+  $('#adminTitle').addEventListener('input', (e) => { adminState.title = e.target.value; setDirty(true); });
 
-  function refreshScoreValidation() {
-    table.querySelectorAll('input.score').forEach((inp) => {
-      const c = state.criteria.find((x) => x.id === inp.dataset.cid);
-      const v = parseFloat(inp.value);
-      inp.classList.toggle('over', Number.isFinite(v) && (v < 0 || (c && v > toNum(c.max))));
-      if (c) inp.max = c.max;
-    });
-  }
+  $('#addJudgeForm').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const name = $('#newJudgeName').value.trim();
+    if (!name) return;
+    adminState.judges.push({ id: '', name, pin: '' });
+    $('#newJudgeName').value = '';
+    setDirty(true);
+    renderJudgeRows();
+  });
 
-  // ============================================================
-  // 追加・削除
-  // ============================================================
   $('#addParticipantForm').addEventListener('submit', (e) => {
     e.preventDefault();
-    const input = $('#participantName');
-    const name = input.value.trim();
+    const name = $('#newParticipantName').value.trim();
     if (!name) return;
-    state.participants.push({ id: uid(), name, scores: {} });
-    input.value = '';
-    save();
-    render();
-    input.focus();
+    adminState.participants.push({ id: '', name });
+    $('#newParticipantName').value = '';
+    setDirty(true);
+    renderParticipantRows();
   });
 
   $('#addCriterionForm').addEventListener('submit', (e) => {
     e.preventDefault();
-    const nameInput = $('#criterionName');
-    const name = nameInput.value.trim();
+    const name = $('#newCriterionName').value.trim();
+    const max = Number($('#newCriterionMax').value);
     if (!name) return;
-    state.criteria.push({ id: uid(), name, max: toNum($('#criterionMax').value) || 10 });
-    nameInput.value = '';
-    save();
-    render();
-    nameInput.focus();
-  });
-
-  function removeParticipant(id) {
-    const p = state.participants.find((x) => x.id === id);
-    if (!p || !confirm(`競技者「${p.name}」を削除しますか？`)) return;
-    state.participants = state.participants.filter((x) => x.id !== id);
-    save();
-    render();
-  }
-
-  function removeCriterion(id) {
-    const c = state.criteria.find((x) => x.id === id);
-    if (!c || !confirm(`評価項目「${c.name}」を削除しますか？\n(入力済みの得点も削除されます)`)) return;
-    state.criteria = state.criteria.filter((x) => x.id !== id);
-    state.participants.forEach((p) => { delete p.scores[id]; });
-    save();
-    render();
-  }
-
-  $('#contestTitle').addEventListener('input', (e) => {
-    state.title = e.target.value;
-    document.title = `${state.title} | スコアボード`;
-    save();
-  });
-
-  $('#resetBtn').addEventListener('click', () => {
-    if (!confirm('すべての競技者・評価項目・得点を消去して初期状態に戻しますか？')) return;
-    state = defaultState();
-    save();
-    render();
-  });
-
-  // ============================================================
-  // 非表示モード (画面共有中に得点が見えないようにする)
-  // 表示状態は保存せず、読み込み時は常に非表示から始める
-  // ============================================================
-  function setEditorVisible(visible) {
-    $('#editor').hidden = !visible;
-    $('#lockPanel').hidden = visible;
-  }
-
-  $('#showEditorBtn').addEventListener('click', () => {
-    if (!confirm('競技者・評価項目・得点を表示します。\n画面共有中の場合は共有画面に映らないか確認してください。')) return;
-    setEditorVisible(true);
-  });
-  $('#hideEditorBtn').addEventListener('click', () => setEditorVisible(false));
-
-  // 保存・読込(JSON)
-  $('#exportBtn').addEventListener('click', () => {
-    const blob = new Blob([JSON.stringify(state, null, 2)], { type: 'application/json' });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = `${state.title || 'score'}.json`;
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
-  });
-
-  $('#importInput').addEventListener('change', async (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-    try {
-      const s = JSON.parse(await file.text());
-      if (!Array.isArray(s.criteria) || !Array.isArray(s.participants)) throw new Error();
-      s.participants.forEach((p) => { p.scores = p.scores || {}; });
-      state = s;
-      save();
-      render();
-    } catch (_) {
-      alert('読み込めないファイルです。');
+    if (!(max > 0)) {
+      toast('満点は 1 以上にしてください。', true);
+      return;
     }
-    e.target.value = '';
+    adminState.criteria.push({ id: '', name, max });
+    $('#newCriterionName').value = '';
+    setDirty(true);
+    renderCriterionRows();
+  });
+
+  $('#adminSaveBtn').addEventListener('click', (e) => {
+    const bad = (list) => list.some((x) => !String(x.name).trim());
+    if (bad(adminState.judges) || bad(adminState.participants) || bad(adminState.criteria)) {
+      toast('名前が空欄の行があります。', true);
+      return;
+    }
+    if (adminState.judges.some((j) => j.pin && !/^\d{4}$/.test(j.pin))) {
+      toast('PIN は 4 桁の数字にしてください (空欄なら自動発行)。', true);
+      return;
+    }
+    if (adminState.criteria.some((c) => !(c.max > 0))) {
+      toast('満点は 1 以上にしてください。', true);
+      return;
+    }
+    withBusy(e.currentTarget, '保存中…', async () => {
+      try {
+        const data = await api('adminSave', {
+          password: adminPassword,
+          data: {
+            title: adminState.title,
+            judges: adminState.judges,
+            participants: adminState.participants,
+            criteria: adminState.criteria,
+          },
+        });
+        loadAdminState(data);
+        toast('保存しました。審査員の画面には次の更新・保存時に反映されます。');
+      } catch (err) {
+        toast(err.message, true);
+      }
+    });
+  });
+
+  $('#progressRefreshBtn').addEventListener('click', (e) => {
+    withBusy(e.currentTarget, '更新中…', async () => {
+      try {
+        const data = await api('adminLogin', { password: adminPassword });
+        if (adminDirty) {
+          // 編集中の内容は残し、採点状況だけ更新する
+          adminState.progress = data.progress || {};
+          renderProgress();
+        } else {
+          loadAdminState(data);
+        }
+      } catch (err) {
+        toast(err.message, true);
+      }
+    });
+  });
+
+  $('#adminLogoutBtn').addEventListener('click', () => {
+    if (adminDirty && !confirm('未保存の変更は破棄されます。ログアウトしますか？')) return;
+    adminPassword = null;
+    adminState = null;
+    setDirty(false);
+    location.hash = '';
   });
 
   // ============================================================
@@ -402,44 +799,40 @@
   }
   addEventListener('resize', resizeCanvas);
 
-  function burstConfetti(count, colors) {
+  function addParticles(count, colors, spawn) {
     resizeCanvas();
-    const W = canvas.width, H = canvas.height;
     for (let i = 0; i < count; i++) {
-      particles.push({
-        x: W / 2 + (Math.random() - 0.5) * W * 0.3,
-        y: H * 0.45,
-        vx: (Math.random() - 0.5) * 26 * devicePixelRatio,
-        vy: (-Math.random() * 22 - 8) * devicePixelRatio,
+      particles.push(Object.assign({
         w: (6 + Math.random() * 8) * devicePixelRatio,
         h: (4 + Math.random() * 6) * devicePixelRatio,
         rot: Math.random() * Math.PI,
         vr: (Math.random() - 0.5) * 0.3,
         color: colors[Math.floor(Math.random() * colors.length)],
         life: 0,
-      });
+      }, spawn()));
     }
-    if (!confettiRunning) { confettiRunning = true; requestAnimationFrame(tickConfetti); }
+    if (!confettiRunning) {
+      confettiRunning = true;
+      requestAnimationFrame(tickConfetti);
+    }
+  }
+
+  function burstConfetti(count, colors) {
+    addParticles(count, colors, () => ({
+      x: canvas.width / 2 + (Math.random() - 0.5) * canvas.width * 0.3,
+      y: canvas.height * 0.45,
+      vx: (Math.random() - 0.5) * 26 * devicePixelRatio,
+      vy: (-Math.random() * 22 - 8) * devicePixelRatio,
+    }));
   }
 
   function rainConfetti(count, colors) {
-    resizeCanvas();
-    const W = canvas.width;
-    for (let i = 0; i < count; i++) {
-      particles.push({
-        x: Math.random() * W,
-        y: -Math.random() * canvas.height * 0.6,
-        vx: (Math.random() - 0.5) * 4 * devicePixelRatio,
-        vy: (2 + Math.random() * 4) * devicePixelRatio,
-        w: (6 + Math.random() * 8) * devicePixelRatio,
-        h: (4 + Math.random() * 6) * devicePixelRatio,
-        rot: Math.random() * Math.PI,
-        vr: (Math.random() - 0.5) * 0.3,
-        color: colors[Math.floor(Math.random() * colors.length)],
-        life: 0,
-      });
-    }
-    if (!confettiRunning) { confettiRunning = true; requestAnimationFrame(tickConfetti); }
+    addParticles(count, colors, () => ({
+      x: Math.random() * canvas.width,
+      y: -Math.random() * canvas.height * 0.6,
+      vx: (Math.random() - 0.5) * 4 * devicePixelRatio,
+      vy: (2 + Math.random() * 4) * devicePixelRatio,
+    }));
   }
 
   function tickConfetti() {
@@ -448,9 +841,8 @@
     particles = particles.filter((p) => p.y < canvas.height + 40 && p.life < 900);
     particles.forEach((p) => {
       p.life++;
-      p.vy += g;
+      p.vy = Math.min(p.vy + g, 7 * devicePixelRatio);
       p.vx *= 0.985;
-      p.vy = Math.min(p.vy, 7 * devicePixelRatio);
       p.x += p.vx + Math.sin(p.life / 12) * devicePixelRatio;
       p.y += p.vy;
       p.rot += p.vr;
@@ -462,7 +854,10 @@
       cctx.restore();
     });
     if (particles.length) requestAnimationFrame(tickConfetti);
-    else { confettiRunning = false; cctx.clearRect(0, 0, canvas.width, canvas.height); }
+    else {
+      confettiRunning = false;
+      cctx.clearRect(0, 0, canvas.width, canvas.height);
+    }
   }
 
   const GOLD = ['#ffe066', '#f5b700', '#fff3b0', '#ffffff', '#ff6b6b', '#4dabf7', '#69db7c'];
@@ -482,11 +877,16 @@
 
   const wait = (ms) => new Promise((res) => timers.push(setTimeout(res, ms)));
   const clearTimers = () => { timers.forEach(clearTimeout); timers = []; };
+  const MEDALS = { 1: '🥇', 2: '🥈', 3: '🥉' };
 
   // 同点は同順位 (1, 1, 3 ...)
-  function computeRanking() {
-    const list = state.participants
-      .map((p) => ({ p, name: p.name.trim() ? `${p.name.trim()}さん` : '(名前なし)', total: totalOf(p) }))
+  function computeRanking(results) {
+    const list = results.participants
+      .map((p) => ({
+        name: p.name.trim() ? `${p.name.trim()}さん` : '(名前なし)',
+        total: p.total,
+        breakdown: p.breakdown.map((b) => ({ name: b.name, value: b.avg })),
+      }))
       .sort((a, b) => b.total - a.total);
     list.forEach((e, i) => {
       e.rank = i > 0 && e.total === list[i - 1].total ? list[i - 1].rank : i + 1;
@@ -494,17 +894,8 @@
     return list;
   }
 
-  const MEDALS = { 1: '🥇', 2: '🥈', 3: '🥉' };
-
-  function el(tag, cls, text) {
-    const e = document.createElement(tag);
-    if (cls) e.className = cls;
-    if (text != null) e.textContent = text;
-    return e;
-  }
-
-  function buildSteps() {
-    const ranking = computeRanking();
+  function buildSteps(results) {
+    const ranking = computeRanking(results);
     const top = ranking.filter((e) => e.rank <= 3);
     const lower = ranking.filter((e) => e.rank > 3);
     const s = [];
@@ -513,7 +904,7 @@
       stage.innerHTML = '';
       stage.append(el('div', 'spotlight'));
       stage.append(el('div', 'intro-title', '結果発表'));
-      stage.append(el('div', 'intro-sub', `${state.title}  ／  参加者 ${ranking.length} 名`));
+      stage.append(el('div', 'intro-sub', `${results.title}  ／  参加者 ${ranking.length} 名  ／  審査員 ${results.judgeCount} 名`));
       playReveal(false);
     });
 
@@ -580,9 +971,7 @@
       card.append(el('div', 'name', e.name));
       card.append(el('div', 'score', `${fmt(e.total)} 点`));
       const bd = el('div', 'breakdown');
-      state.criteria.forEach((c) => {
-        bd.append(el('span', 'chip', `${c.name}: ${fmt(toNum(e.p.scores[c.id]))}`));
-      });
+      e.breakdown.forEach((b) => bd.append(el('span', 'chip', `${b.name}: ${fmt(b.value)}`)));
       card.append(bd);
       wrap.append(card);
     });
@@ -630,11 +1019,8 @@
     nextBtn.textContent = stepIndex >= steps.length ? '閉じる' : '次へ ▶';
   }
 
-  function openOverlay() {
-    if (!state.participants.length) return;
-    ctx(); // ユーザー操作中に AudioContext を有効化
-    setEditorVisible(false); // 発表後に得点表が見えたままにならないよう隠す
-    steps = buildSteps();
+  function openOverlay(results) {
+    steps = buildSteps(results);
     stepIndex = 0;
     overlay.hidden = false;
     document.body.style.overflow = 'hidden';
@@ -650,7 +1036,27 @@
     document.body.style.overflow = '';
   }
 
-  $('#announceBtn').addEventListener('click', openOverlay);
+  $('#announceBtn').addEventListener('click', (e) => {
+    if (adminDirty) {
+      toast('未保存の変更があります。先に「保存して全員に反映」を押してください。', true);
+      return;
+    }
+    if (!adminState.participants.length) {
+      toast('参加者が登録されていません。', true);
+      return;
+    }
+    const incomplete = countIncomplete();
+    if (incomplete && !confirm(`採点が終わっていない組み合わせが ${incomplete} 件あります。\nこのまま結果発表しますか？`)) return;
+    ctx(); // ユーザー操作中に AudioContext を有効化
+    withBusy(e.currentTarget, '集計中…', async () => {
+      try {
+        openOverlay(await api('results', { password: adminPassword }));
+      } catch (err) {
+        toast(err.message, true);
+      }
+    });
+  });
+
   $('#closeOverlay').addEventListener('click', closeOverlay);
   nextBtn.addEventListener('click', () => {
     if (stepIndex >= steps.length) closeOverlay();
@@ -665,6 +1071,26 @@
     }
   });
 
-  render();
-  setEditorVisible(false);
+  // ============================================================
+  // 起動
+  // ============================================================
+  async function init() {
+    // 画面共有に備え、再読み込み時にブラウザが復元したチェック状態を戻して PIN は常に隠した状態から始める
+    $('#showPins').checked = false;
+    if (MOCK) {
+      try {
+        await loadScript('mock-gas.js');
+        await loadScript('apps-script/Code.js');
+      } catch (e) {
+        showError(e.message);
+        return;
+      }
+    } else if (!API_URL) {
+      showError('データの保存先 (Google Apps Script の URL) が設定されていません。README の手順で config.js を設定してください。');
+      return;
+    }
+    route();
+  }
+
+  init();
 })();
