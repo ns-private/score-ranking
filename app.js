@@ -9,7 +9,7 @@
   // ============================================================
   // 共通
   // ============================================================
-  const VIEWS = ['viewLoading', 'viewError', 'viewJudgeLogin', 'viewJudgeList', 'viewJudgeScore', 'viewAdminLogin', 'viewAdmin'];
+  const VIEWS = ['viewLoading', 'viewError', 'viewLive', 'viewJudgeLogin', 'viewJudgeList', 'viewJudgeScore', 'viewAdminLogin', 'viewAdmin'];
   function show(id) {
     VIEWS.forEach((v) => { $('#' + v).hidden = v !== id; });
     window.scrollTo(0, 0);
@@ -110,9 +110,14 @@
   }
 
   // ============================================================
-  // 画面の切り替え (#admin で管理者画面)
+  // 画面の切り替え (#admin: 管理者 / #live: 観覧 / それ以外: 審査員)
   // ============================================================
   function route() {
+    if (location.hash === '#live') {
+      startLive();
+      return;
+    }
+    stopLive();
     if (location.hash === '#admin') startAdmin();
     else startJudge();
   }
@@ -865,80 +870,60 @@
   const BRONZE = ['#f4c08a', '#cd7f32', '#ffd8a8', '#ffffff'];
 
   // ============================================================
-  // 結果発表
+  // 結果発表 (サーバーが作ったステップを 1 つずつ再生する)
+  //   local : 管理者の画面だけで再生する (全ステップをまとめて取得)
+  //   live  : 管理者が 1 ステップずつ公開し、観覧ページの画面も追従する
+  //   viewer: 観覧ページ。公開されたステップを順番に再生する
   // ============================================================
   const overlay = $('#overlay');
   const stage = $('#stage');
   const nextBtn = $('#nextBtn');
-  let steps = [];
-  let stepIndex = 0;
+  const MEDALS = { 1: '🥇', 2: '🥈', 3: '🥉' };
+  let presentation = null; // 管理者の発表 { mode, steps, index, total, sessionId }
   let busy = false;
   let timers = [];
 
-  const wait = (ms) => new Promise((res) => timers.push(setTimeout(res, ms)));
-  const clearTimers = () => { timers.forEach(clearTimeout); timers = []; };
-  const MEDALS = { 1: '🥇', 2: '🥈', 3: '🥉' };
+  // 閉じたときに途中の演出が止まるよう、待機中の Promise もまとめて解決する
+  const wait = (ms) => new Promise((res) => { timers.push({ id: setTimeout(res, ms), res }); });
+  const clearTimers = () => { timers.forEach((t) => { clearTimeout(t.id); t.res(); }); timers = []; };
+  const honorific = (name) => (String(name).trim() ? `${String(name).trim()}さん` : '(名前なし)');
 
-  // 同点は同順位 (1, 1, 3 ...)
-  function computeRanking(results) {
-    const list = results.participants
-      .map((p) => ({
-        name: p.name.trim() ? `${p.name.trim()}さん` : '(名前なし)',
-        total: p.total,
-        breakdown: p.breakdown.map((b) => ({ name: b.name, value: b.avg })),
-      }))
-      .sort((a, b) => b.total - a.total);
-    list.forEach((e, i) => {
-      e.rank = i > 0 && e.total === list[i - 1].total ? list[i - 1].rank : i + 1;
-    });
-    return list;
+  function playStep(payload) {
+    if (payload.type === 'intro') return playIntro(payload);
+    if (payload.type === 'lower') return playLower(payload);
+    if (payload.type === 'top') return playTop(payload);
+    if (payload.type === 'podium') return playPodium(payload);
+    return Promise.resolve();
   }
 
-  function buildSteps(results) {
-    const ranking = computeRanking(results);
-    const top = ranking.filter((e) => e.rank <= 3);
-    const lower = ranking.filter((e) => e.rank > 3);
-    const s = [];
-
-    s.push(async () => {
-      stage.innerHTML = '';
-      stage.append(el('div', 'spotlight'));
-      stage.append(el('div', 'intro-title', '結果発表'));
-      stage.append(el('div', 'intro-sub', `${results.title}  ／  参加者 ${ranking.length} 名  ／  審査員 ${results.judgeCount} 名`));
-      playReveal(false);
-    });
-
-    if (lower.length) {
-      s.push(async () => {
-        stage.innerHTML = '';
-        stage.append(el('div', 'rank-label', '4位以下の発表'));
-        const listBox = el('div', 'lower-list');
-        stage.append(listBox);
-        // 下位から順に表示
-        const rev = [...lower].reverse();
-        for (const e of rev) {
-          const row = el('div', 'lower-row');
-          row.append(el('span', 'r', `${e.rank}位`), el('span', 'n', e.name), el('span', 's', `${fmt(e.total)} 点`));
-          listBox.prepend(row);
-          playTick();
-          await wait(Math.max(180, 900 / rev.length));
-        }
-      });
-    }
-
-    // 3位 → 2位 → 1位 (同点なら同時発表)
-    const topRanks = [...new Set(top.map((e) => e.rank))].sort((a, b) => b - a);
-    topRanks.forEach((rank) => {
-      const winners = top.filter((e) => e.rank === rank);
-      s.push(() => revealTop(rank, winners, ranking));
-    });
-
-    if (top.length) s.push(() => showPodium(top));
-    return s;
-  }
-
-  async function revealTop(rank, winners, ranking) {
+  async function playIntro(p) {
     stage.innerHTML = '';
+    stage.append(el('div', 'spotlight'));
+    stage.append(el('div', 'intro-title', '結果発表'));
+    stage.append(el('div', 'intro-sub', `${p.title}  ／  参加者 ${p.participantCount} 名  ／  審査員 ${p.judgeCount} 名`));
+    playReveal(false);
+  }
+
+  async function playLower(p) {
+    stage.innerHTML = '';
+    stage.append(el('div', 'rank-label', '4位以下の発表'));
+    const listBox = el('div', 'lower-list');
+    stage.append(listBox);
+    // 下位から順に表示
+    const rev = [...p.entries].reverse();
+    for (const e of rev) {
+      const row = el('div', 'lower-row');
+      row.append(el('span', 'r', `${e.rank}位`), el('span', 'n', honorific(e.name)), el('span', 's', `${fmt(e.total)} 点`));
+      listBox.prepend(row);
+      playTick();
+      await wait(Math.max(180, 900 / rev.length));
+      if (overlay.hidden) return;
+    }
+  }
+
+  async function playTop(p) {
+    stage.innerHTML = '';
+    const rank = p.rank;
     const isFirst = rank === 1;
     if (isFirst) stage.append(el('div', 'spotlight'));
     const label = el('div', 'rank-label', `第 ${rank} 位 は…`);
@@ -949,8 +934,7 @@
     // ドラムロール: 名前をシャッフル表示
     const duration = isFirst ? 3600 : 2400;
     playDrumroll(duration / 1000);
-    const candidates = ranking.filter((e) => e.rank <= rank).map((e) => e.name);
-    const pool = candidates.length > 1 ? candidates : ranking.map((e) => e.name);
+    const pool = p.pool.map(honorific);
     const start = performance.now();
     let i = 0;
     while (performance.now() - start < duration) {
@@ -961,14 +945,14 @@
     }
 
     roll.remove();
-    label.textContent = winners.length > 1 ? `第 ${rank} 位 (同点 ${winners.length} 名)` : `第 ${rank} 位`;
+    label.textContent = p.winners.length > 1 ? `第 ${rank} 位 (同点 ${p.winners.length} 名)` : `第 ${rank} 位`;
 
     const wrap = el('div', '');
     wrap.style.cssText = 'display:flex;flex-wrap:wrap;justify-content:center;gap:32px;';
-    winners.forEach((e) => {
+    p.winners.forEach((e) => {
       const card = el('div', `result-card rank-${rank}`);
       card.append(el('div', 'medal', MEDALS[rank]));
-      card.append(el('div', 'name', e.name));
+      card.append(el('div', 'name', honorific(e.name)));
       card.append(el('div', 'score', `${fmt(e.total)} 点`));
       const bd = el('div', 'breakdown');
       e.breakdown.forEach((b) => bd.append(el('span', 'chip', `${b.name}: ${fmt(b.value)}`)));
@@ -990,41 +974,27 @@
     }
   }
 
-  async function showPodium(top) {
+  async function playPodium(p) {
     stage.innerHTML = '';
     stage.append(el('div', 'final-title', '🎉 おめでとうございます! 🎉'));
     const podium = el('div', 'podium');
-    [1, 2, 3].forEach((rank) => {
-      const group = top.filter((e) => e.rank === rank);
-      if (!group.length) return;
-      const col = el('div', `podium-col p${rank}`);
-      col.append(el('div', 'p-name', group.map((e) => e.name).join(' / ')));
-      col.append(el('div', 'p-score', `${fmt(group[0].total)} 点`));
-      col.append(el('div', 'block', `${rank}`));
+    p.groups.forEach((g) => {
+      const col = el('div', `podium-col p${g.rank}`);
+      col.append(el('div', 'p-name', g.names.map(honorific).join(' / ')));
+      col.append(el('div', 'p-score', `${fmt(g.total)} 点`));
+      col.append(el('div', 'block', `${g.rank}`));
       podium.append(col);
     });
     stage.append(podium);
     rainConfetti(180, GOLD);
   }
 
-  async function runStep() {
-    if (busy || stepIndex >= steps.length) return;
-    busy = true;
-    nextBtn.disabled = true;
-    await steps[stepIndex]();
-    stepIndex++;
-    busy = false;
-    if (overlay.hidden) return;
-    nextBtn.disabled = false;
-    nextBtn.textContent = stepIndex >= steps.length ? '閉じる' : '次へ ▶';
-  }
-
-  function openOverlay(results) {
-    steps = buildSteps(results);
-    stepIndex = 0;
+  function openOverlay(mode) {
     overlay.hidden = false;
     document.body.style.overflow = 'hidden';
-    runStep();
+    $('#liveBadge').hidden = mode === 'local';
+    nextBtn.hidden = mode === 'viewer';
+    stage.innerHTML = '';
   }
 
   function closeOverlay() {
@@ -1034,6 +1004,57 @@
     particles = [];
     stage.innerHTML = '';
     document.body.style.overflow = '';
+  }
+
+  // ---------- 管理者 ----------
+  const isLastStep = () => presentation && presentation.index >= presentation.total - 1;
+
+  function updateNextBtn() {
+    nextBtn.disabled = busy;
+    nextBtn.textContent = isLastStep() ? '閉じる' : '次へ ▶';
+  }
+
+  async function adminPlay(payload) {
+    busy = true;
+    updateNextBtn();
+    await playStep(payload);
+    busy = false;
+    if (!overlay.hidden) updateNextBtn();
+  }
+
+  async function adminNext() {
+    if (busy || !presentation) return;
+    if (isLastStep()) {
+      adminClose();
+      return;
+    }
+    if (presentation.mode === 'local') {
+      presentation.index++;
+      adminPlay(presentation.steps[presentation.index]);
+      return;
+    }
+    busy = true;
+    nextBtn.disabled = true;
+    nextBtn.textContent = '…';
+    try {
+      const r = await api('announceNext', { password: adminPassword, sessionId: presentation.sessionId });
+      if (!presentation) return;
+      presentation.index = r.step;
+      busy = false;
+      adminPlay(r.payload);
+    } catch (err) {
+      busy = false;
+      updateNextBtn();
+      toast(err.message, true);
+    }
+  }
+
+  function adminClose() {
+    const wasLive = presentation && presentation.mode === 'live';
+    presentation = null;
+    closeOverlay();
+    // 観覧ページの発表も終了させる
+    if (wasLive) api('announceEnd', { password: adminPassword }).catch((err) => toast(err.message, true));
   }
 
   $('#announceBtn').addEventListener('click', (e) => {
@@ -1047,27 +1068,134 @@
     }
     const incomplete = countIncomplete();
     if (incomplete && !confirm(`採点が終わっていない組み合わせが ${incomplete} 件あります。\nこのまま結果発表しますか？`)) return;
+    const live = $('#liveToggle').checked;
     ctx(); // ユーザー操作中に AudioContext を有効化
     withBusy(e.currentTarget, '集計中…', async () => {
       try {
-        openOverlay(await api('results', { password: adminPassword }));
+        if (live) {
+          const r = await api('announceStart', { password: adminPassword });
+          presentation = { mode: 'live', sessionId: r.sessionId, index: r.step, total: r.total };
+          openOverlay('live');
+          adminPlay(r.payload);
+        } else {
+          const r = await api('announcePreview', { password: adminPassword });
+          presentation = { mode: 'local', steps: r.steps, index: 0, total: r.steps.length };
+          openOverlay('local');
+          adminPlay(r.steps[0]);
+        }
       } catch (err) {
         toast(err.message, true);
       }
     });
   });
 
-  $('#closeOverlay').addEventListener('click', closeOverlay);
-  nextBtn.addEventListener('click', () => {
-    if (stepIndex >= steps.length) closeOverlay();
-    else runStep();
+  // ---------- 観覧 (ポーリングで管理者の発表に追従) ----------
+  const LIVE_POLL_IDLE = 3000;
+  const LIVE_POLL_ACTIVE = 1500;
+  let liveRunning = false;
+  let livePollTimer = null;
+  let liveKey = null; // 表示済みの "sessionId:step"
+  let liveQueue = [];
+  let livePlaying = false;
+  let liveEnded = false;
+
+  async function startLive() {
+    setMode('観覧');
+    show('viewLive');
+    if (!config) {
+      try { config = await api('config'); } catch (_) { /* ポーリング側で再接続する */ }
+    }
+    if (config) setTitle(config.title);
+    if (!liveRunning) {
+      liveRunning = true;
+      pollLive();
+    }
+  }
+
+  function stopLive() {
+    if (!liveRunning) return;
+    liveRunning = false;
+    clearTimeout(livePollTimer);
+    liveQueue = [];
+    liveKey = null;
+    if (!presentation) closeOverlay();
+  }
+
+  function setLiveStatus(ok) {
+    $('#liveDot').className = 'live-dot ' + (ok ? 'on' : 'error');
+    $('#liveStatus').textContent = ok ? '接続中 (自動で更新しています)' : '接続が不安定です。再接続しています…';
+  }
+
+  async function pollLive() {
+    if (!liveRunning) return;
+    let active = false;
+    try {
+      const r = await api('live');
+      if (!liveRunning) return;
+      setLiveStatus(true);
+      active = r.active;
+      if (r.active) {
+        const key = r.sessionId + ':' + r.step;
+        if (key !== liveKey) {
+          liveKey = key;
+          liveEnded = false;
+          liveQueue.push(r.payload);
+          pumpLive();
+        }
+      } else if (liveKey) {
+        liveKey = null;
+        liveEnded = true;
+        pumpLive();
+      }
+    } catch (_) {
+      setLiveStatus(false);
+    }
+    if (liveRunning) livePollTimer = setTimeout(pollLive, (active ? LIVE_POLL_ACTIVE : LIVE_POLL_IDLE) + Math.random() * 500);
+  }
+
+  async function pumpLive() {
+    if (livePlaying) return;
+    livePlaying = true;
+    while (liveQueue.length && liveRunning) {
+      const payload = liveQueue.shift();
+      if (overlay.hidden) openOverlay('viewer');
+      await playStep(payload);
+    }
+    livePlaying = false;
+    // 管理者が発表を閉じたら、演出が終わってから閉じる
+    if (liveEnded && !liveQueue.length) {
+      liveEnded = false;
+      closeOverlay();
+    }
+  }
+
+  $('#liveSoundBtn').addEventListener('click', () => {
+    ctx();
+    $('#soundToggle').checked = true;
+    playTick();
+    $('#liveSoundBtn').hidden = true;
+    $('#liveSoundNote').hidden = false;
   });
+
+  // ---------- 共通の操作 ----------
+  function closeByUser() {
+    if (presentation) {
+      adminClose();
+    } else {
+      // 観覧者が閉じた場合は、次のステップが公開されたらまた開く
+      liveQueue = [];
+      closeOverlay();
+    }
+  }
+
+  $('#closeOverlay').addEventListener('click', closeByUser);
+  nextBtn.addEventListener('click', adminNext);
   document.addEventListener('keydown', (e) => {
     if (overlay.hidden) return;
-    if (e.key === 'Escape') closeOverlay();
+    if (e.key === 'Escape') closeByUser();
     else if (e.key === ' ' || e.key === 'Enter' || e.key === 'ArrowRight') {
       e.preventDefault();
-      if (!nextBtn.disabled) nextBtn.click();
+      if (!nextBtn.hidden && !nextBtn.disabled) adminNext();
     }
   });
 

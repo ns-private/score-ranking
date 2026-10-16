@@ -29,6 +29,16 @@
     <button id="retryBtn" class="btn primary">再読み込み</button>
   </section>
 
+  <!-- 観覧 (参加者・会場向け): 管理者が結果発表を始めると自動で表示 -->
+  <section id="viewLive" class="panel narrow center live-wait" hidden>
+    <div class="live-icon">🏆</div>
+    <h2 id="liveHeading">結果発表をお待ちください</h2>
+    <p class="muted">管理者が結果発表を始めると、この画面で自動的に始まります。<br>このページを開いたままお待ちください。</p>
+    <p class="live-status"><span id="liveDot" class="live-dot"></span><span id="liveStatus">接続中…</span></p>
+    <button id="liveSoundBtn" class="btn primary">🔊 効果音をオンにする</button>
+    <p id="liveSoundNote" class="muted small" hidden>効果音: オン</p>
+  </section>
+
   <!-- 審査員ログイン -->
   <section id="viewJudgeLogin" class="panel narrow" hidden>
     <h2>審査員ログイン</h2>
@@ -142,13 +152,16 @@
 
     <div class="announce-wrap">
       <button id="announceBtn" class="btn announce">🏆 結果発表</button>
+      <label class="check live-toggle"><input id="liveToggle" type="checkbox" checked autocomplete="off"> 観覧ページ (#live) を開いている人の画面にも同時に表示する</label>
     </div>
   </section>
 
   <footer class="footer">
-    <a href="#" id="judgeLink">審査員</a>
+    <a href="#live">観覧</a>
     <span class="muted">|</span>
-    <a href="#admin" id="adminLink">管理者</a>
+    <a href="#">審査員</a>
+    <span class="muted">|</span>
+    <a href="#admin">管理者</a>
   </footer>
 </main>
 
@@ -158,6 +171,7 @@
 <div id="overlay" class="overlay" hidden>
   <canvas id="confetti"></canvas>
   <button id="closeOverlay" class="close-btn" aria-label="閉じる">✕</button>
+  <div id="liveBadge" class="live-badge" hidden><span class="live-dot on"></span>LIVE</div>
   <div id="stage" class="stage"></div>
   <div class="overlay-footer">
     <button id="nextBtn" class="btn next">次へ ▶</button>

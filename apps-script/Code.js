@@ -167,6 +167,48 @@ const ACTIONS = {
     requireAdmin_(req);
     return results_();
   },
+
+  // ---------- 結果発表 ----------
+  // 管理者の画面だけで発表する (参加者の画面には出さない)
+  announcePreview: (req) => {
+    requireAdmin_(req);
+    return { steps: buildSteps_() };
+  },
+
+  // 参加者の画面にも同時に発表する: 1 ステップずつ公開し、閲覧者は live をポーリングする
+  announceStart: (req) => withLock_(() => {
+    requireAdmin_(req);
+    const steps = buildSteps_();
+    const state = { active: true, sessionId: newId_(), step: 0, total: steps.length, updatedAt: Date.now() };
+    saveLive_(state, steps);
+    return liveView_(state, steps);
+  }),
+
+  announceNext: (req) => withLock_(() => {
+    requireAdmin_(req);
+    const state = loadLive_();
+    if (!state.active || state.sessionId !== req.sessionId) throw userError_('この結果発表は終了しています。もう一度「結果発表」を押してください。');
+    if (state.step < state.total - 1) state.step++;
+    state.updatedAt = Date.now();
+    saveLive_(state);
+    return liveView_(state, liveSteps_(state));
+  }),
+
+  announceEnd: (req) => withLock_(() => {
+    requireAdmin_(req);
+    const state = loadLive_();
+    state.active = false;
+    state.updatedAt = Date.now();
+    saveLive_(state);
+    return { active: false };
+  }),
+
+  // 誰でも取得できる: 公開済みのステップだけを返す (順位の先読みはできない)
+  live: () => {
+    const state = loadLive_();
+    if (!state.active) return { active: false, sessionId: state.sessionId || null };
+    return liveView_(state, liveSteps_(state));
+  },
 };
 
 // ============================================================
@@ -233,6 +275,88 @@ function results_() {
     };
   });
   return { title: cfg.title, judgeCount: cfg.judges.length, criteria: cfg.criteria, participants: participants };
+}
+
+// ============================================================
+// 結果発表のステップ
+//   intro → lower (4位以下) → top (3位, 2位, 1位 / 同点は同時) → podium
+// ============================================================
+function buildSteps_() {
+  const r = results_();
+  const list = r.participants
+    .map((p) => ({ name: p.name, total: p.total, breakdown: p.breakdown.map((b) => ({ name: b.name, value: b.avg })) }))
+    .sort((a, b) => b.total - a.total);
+  // 同点は同順位 (1, 1, 3 ...)
+  list.forEach((e, i) => { e.rank = i > 0 && e.total === list[i - 1].total ? list[i - 1].rank : i + 1; });
+
+  const steps = [{ type: 'intro', title: r.title, participantCount: list.length, judgeCount: r.judgeCount }];
+
+  const lower = list.filter((e) => e.rank > 3);
+  if (lower.length) steps.push({ type: 'lower', entries: lower.map((e) => ({ rank: e.rank, name: e.name, total: e.total })) });
+
+  const top = list.filter((e) => e.rank <= 3);
+  const ranks = top.map((e) => e.rank).filter((v, i, a) => a.indexOf(v) === i).sort((a, b) => b - a);
+  ranks.forEach((rank) => {
+    // ドラムロールで流す名前 (画面に出るのと同じ範囲だけを渡す)
+    const candidates = list.filter((e) => e.rank <= rank).map((e) => e.name);
+    steps.push({
+      type: 'top',
+      rank: rank,
+      winners: top.filter((e) => e.rank === rank),
+      pool: candidates.length > 1 ? candidates : list.map((e) => e.name),
+    });
+  });
+
+  if (top.length) {
+    steps.push({
+      type: 'podium',
+      groups: ranks.slice().sort((a, b) => a - b).map((rank) => {
+        const g = top.filter((e) => e.rank === rank);
+        return { rank: rank, names: g.map((e) => e.name), total: g[0].total };
+      }),
+    });
+  }
+  return steps;
+}
+
+// ============================================================
+// ライブ発表の状態 (状態はスクリプト プロパティ、ステップは 6 時間キャッシュ)
+// ============================================================
+const LIVE_TTL_SECONDS = 21600;
+
+function loadLive_() {
+  const cache = CacheService.getScriptCache();
+  let raw = cache.get('live:state');
+  if (!raw) {
+    raw = PropertiesService.getScriptProperties().getProperty('LIVE_STATE') || '{"active":false}';
+    cache.put('live:state', raw, LIVE_TTL_SECONDS);
+  }
+  const state = JSON.parse(raw);
+  // 6 時間以上動きがない発表は終了扱い
+  if (state.active && Date.now() - Number(state.updatedAt || 0) > LIVE_TTL_SECONDS * 1000) state.active = false;
+  return state;
+}
+
+function saveLive_(state, steps) {
+  const raw = JSON.stringify(state);
+  PropertiesService.getScriptProperties().setProperty('LIVE_STATE', raw);
+  const cache = CacheService.getScriptCache();
+  cache.put('live:state', raw, LIVE_TTL_SECONDS);
+  if (steps) cache.put('live:steps:' + state.sessionId, JSON.stringify(steps), LIVE_TTL_SECONDS);
+}
+
+function liveSteps_(state) {
+  const cache = CacheService.getScriptCache();
+  const raw = cache.get('live:steps:' + state.sessionId);
+  if (raw) return JSON.parse(raw);
+  // キャッシュが消えていたら作り直す (得点が変わっていなければ同じ内容になる)
+  const steps = buildSteps_();
+  cache.put('live:steps:' + state.sessionId, JSON.stringify(steps), LIVE_TTL_SECONDS);
+  return steps;
+}
+
+function liveView_(state, steps) {
+  return { active: true, sessionId: state.sessionId, step: state.step, total: state.total, payload: steps[state.step] };
 }
 
 // ============================================================

@@ -210,6 +210,22 @@ input.wide { width: 100%; }
 }
 .btn.announce:hover:not(:disabled) { filter: brightness(1.05); }
 
+.live-toggle { justify-content: center; margin-top: 14px; font-size: .9rem; color: var(--muted); }
+
+/* ---------- 観覧 ---------- */
+.live-wait { padding: 36px 20px; }
+.live-icon { font-size: 3rem; }
+.live-status { display: flex; align-items: center; justify-content: center; gap: 8px; font-size: .9rem; color: var(--muted); }
+.live-dot { width: 10px; height: 10px; border-radius: 50%; background: #c4c7d4; display: inline-block; }
+.live-dot.on { background: #ef4444; animation: pulse 1.6s ease-in-out infinite; }
+.live-dot.error { background: var(--warn); }
+@keyframes pulse { 50% { opacity: .35; } }
+.live-badge {
+  position: absolute; top: 14px; left: 16px; z-index: 4;
+  display: flex; align-items: center; gap: 6px;
+  font-size: .8rem; font-weight: 900; letter-spacing: .1em; color: rgba(255,255,255,.8);
+}
+
 /* ---------- オーバーレイ ---------- */
 .overlay {
   position: fixed;
