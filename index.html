@@ -46,12 +46,12 @@
       <label class="field">審査員
         <select id="judgeSelect" required></select>
       </label>
-      <label class="field">PIN (4 桁)
+      <label id="judgePinField" class="field">PIN (4 桁)
         <input id="judgePin" inputmode="numeric" pattern="\d{4}" maxlength="4" autocomplete="off" required>
       </label>
       <button class="btn primary block" type="submit">ログイン</button>
     </form>
-    <p class="muted small">PIN は管理者から受け取ってください。</p>
+    <p id="judgePinNote" class="muted small">PIN は管理者から受け取ってください。</p>
   </section>
 
   <!-- 審査員: 参加者一覧 -->
@@ -114,6 +114,8 @@
         <h2>審査員</h2>
         <label class="small muted check"><input id="showPins" type="checkbox" autocomplete="off"> PIN を表示</label>
       </div>
+      <label class="check pin-setting"><input id="judgePinToggle" type="checkbox" checked autocomplete="off"> 審査員のログインに PIN を使う</label>
+      <p id="judgePinOffNote" class="warn-note" hidden>PIN なしでは、URL を知っていれば誰でも審査員として採点できます。会場内だけで使う場合などに限ってください。</p>
       <div id="judgeList" class="item-list"></div>
       <form id="addJudgeForm" class="add-form">
         <input id="newJudgeName" placeholder="審査員名" maxlength="40" required>

@@ -150,7 +150,8 @@ const ACTIONS = {
     });
 
     const title = String(data.title || '').trim().slice(0, 60) || 'コンテスト';
-    write_('settings', [{ key: 'title', value: title }]);
+    const judgePin = data.judgePinRequired === false ? 'off' : 'on';
+    write_('settings', [{ key: 'title', value: title }, { key: 'judgePin', value: judgePin }]);
     write_('judges', judges);
     write_('participants', participants);
     write_('criteria', criteria);
@@ -215,10 +216,11 @@ const ACTIONS = {
 // データの組み立て
 // ============================================================
 function config_() {
-  const settings = {};
-  read_('settings').forEach((r) => { settings[r.key] = r.value; });
+  const settings = settings_();
   return {
     title: settings.title || 'コンテスト',
+    // 審査員ログインで PIN を確認するか (既定はオン)
+    judgePinRequired: settings.judgePin !== 'off',
     judges: read_('judges').map((j) => ({ id: j.id, name: j.name })),
     participants: read_('participants').map((p) => ({ id: p.id, name: p.name })),
     criteria: read_('criteria').map((c) => ({ id: c.id, name: c.name, max: Number(c.max) || 10 })),
@@ -373,12 +375,19 @@ function requireAdmin_(req) {
   }
 }
 
+function settings_() {
+  const settings = {};
+  read_('settings').forEach((r) => { settings[r.key] = r.value; });
+  return settings;
+}
+
 function requireJudge_(req) {
   const key = 'fail:judge:' + String(req.judgeId || '');
   checkLock_(key, JUDGE_MAX_FAILS);
+  const pinRequired = settings_().judgePin !== 'off';
   const judge = read_('judges').find((j) => j.id === String(req.judgeId || ''));
   if (!judge) throw userError_('審査員が見つかりません。管理者に確認してください。');
-  if (String(req.pin || '') !== judge.pin) {
+  if (pinRequired && String(req.pin || '') !== judge.pin) {
     countFail_(key);
     throw userError_('PIN が違います。');
   }

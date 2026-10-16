@@ -189,6 +189,10 @@ input.wide { width: 100%; }
 .item-row .max { width: 80px; flex: none; text-align: center; }
 .item-row .unit { color: var(--muted); font-size: .85rem; white-space: nowrap; }
 
+.pin-setting { margin-bottom: 12px; font-weight: 700; }
+.warn-note { background: var(--warn-soft); color: var(--warn); border-radius: 8px; padding: 8px 12px; font-size: .85rem; margin: 0 0 12px; }
+.item-list.pins-off .pin { opacity: .4; }
+
 .table-wrap { overflow-x: auto; }
 .progress-table { border-collapse: collapse; width: 100%; font-size: .9rem; }
 .progress-table th, .progress-table td { border-bottom: 1px solid var(--line); padding: 8px; text-align: center; white-space: nowrap; }

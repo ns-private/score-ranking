@@ -152,6 +152,9 @@
   let currentPid = null;
   let draft = {};
 
+  // 管理者が PIN をオフにしていなければ PIN を確認する (古いサーバーは常にオン)
+  const pinRequired = (cfg) => !cfg || cfg.judgePinRequired !== false;
+
   async function startJudge() {
     setMode('審査員');
     if (judge) {
@@ -162,17 +165,18 @@
     show('viewLoading');
     const saved = storageGet(JUDGE_KEY);
     try {
-      if (saved && saved.judgeId && saved.pin) {
+      config = await api('config');
+      setTitle(config.title);
+      // 前回のログインを使う (PIN 必須に変わっていて PIN を保存していなければログイン画面へ)
+      if (saved && saved.judgeId && (saved.pin || !pinRequired(config))) {
         try {
-          await judgeLogin(saved.judgeId, saved.pin);
+          await judgeLogin(saved.judgeId, saved.pin || '');
           return;
         } catch (e) {
           storageSet(JUDGE_KEY, null);
           toast(e.message, true);
         }
       }
-      config = await api('config');
-      setTitle(config.title);
       showJudgeLogin();
     } catch (e) {
       showError(e.message);
@@ -196,6 +200,10 @@
         sel.appendChild(opt);
       });
     }
+    const needPin = pinRequired(config);
+    $('#judgePinField').hidden = !needPin;
+    $('#judgePinNote').hidden = !needPin;
+    $('#judgePin').required = needPin;
     $('#judgePin').value = '';
     show('viewJudgeLogin');
   }
@@ -214,7 +222,7 @@
   $('#judgeLoginForm').addEventListener('submit', (e) => {
     e.preventDefault();
     const judgeId = $('#judgeSelect').value;
-    const pin = $('#judgePin').value.trim();
+    const pin = pinRequired(config) ? $('#judgePin').value.trim() : '';
     if (!judgeId) {
       toast('審査員を選択してください。', true);
       return;
@@ -227,6 +235,18 @@
       }
     });
   });
+
+  // 管理者が PIN をオンにした・審査員を削除したなどでログインが無効になったらログイン画面に戻す
+  function handleJudgeError(err) {
+    const pinNowRequired = /PIN/.test(err.message) && judge && !judge.pin;
+    toast(pinNowRequired ? 'PIN が必要になりました。管理者から受け取った PIN でログインしてください。' : err.message, true);
+    if (/PIN|審査員が見つかりません/.test(err.message)) {
+      storageSet(JUDGE_KEY, null);
+      judge = null;
+      myScores = {};
+      startJudge();
+    }
+  }
 
   function scoredCount(pid) {
     const s = myScores[pid] || {};
@@ -364,7 +384,7 @@
         renderJudgeList();
         show('viewJudgeList');
       } catch (err) {
-        toast(err.message, true);
+        handleJudgeError(err);
       }
     });
   });
@@ -381,7 +401,7 @@
         await judgeLogin(judge.id, judge.pin);
         toast('最新の情報に更新しました');
       } catch (err) {
-        toast(err.message, true);
+        handleJudgeError(err);
       }
     });
   });
@@ -420,6 +440,7 @@
   function loadAdminState(data) {
     adminState = {
       title: data.title,
+      judgePinRequired: data.judgePinRequired !== false,
       judges: data.judges.map((j) => ({ id: j.id, name: j.name, pin: j.pin })),
       participants: data.participants.map((p) => ({ id: p.id, name: p.name })),
       criteria: data.criteria.map((c) => ({ id: c.id, name: c.name, max: c.max })),
@@ -447,6 +468,7 @@
 
   function renderAdmin() {
     $('#adminTitle').value = adminState.title;
+    renderPinSetting();
     renderJudgeRows();
     renderParticipantRows();
     renderCriterionRows();
@@ -597,6 +619,17 @@
     table.appendChild(tbody);
   }
 
+  function renderPinSetting() {
+    $('#judgePinToggle').checked = adminState.judgePinRequired;
+    $('#judgePinOffNote').hidden = adminState.judgePinRequired;
+    $('#judgeList').classList.toggle('pins-off', !adminState.judgePinRequired);
+  }
+
+  $('#judgePinToggle').addEventListener('change', (e) => {
+    adminState.judgePinRequired = e.target.checked;
+    setDirty(true);
+    renderPinSetting();
+  });
   $('#showPins').addEventListener('change', renderJudgeRows);
   $('#adminTitle').addEventListener('input', (e) => { adminState.title = e.target.value; setDirty(true); });
 
@@ -655,6 +688,7 @@
           password: adminPassword,
           data: {
             title: adminState.title,
+            judgePinRequired: adminState.judgePinRequired,
             judges: adminState.judges,
             participants: adminState.participants,
             criteria: adminState.criteria,
